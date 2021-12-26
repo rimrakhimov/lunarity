@@ -18,7 +18,7 @@ impl<'source> Lexer<'source> {
     pub fn with_extras(source: &'source str, extras: TypeSize) -> Self {
         Self {
             lex: LogosLexer::with_extras(source, TypeSizeAndFlag(extras.0, extras.1, false)),
-            extras: extras,
+            extras,
         }
     }
 
@@ -212,13 +212,13 @@ impl<'source> Iterator for Lexer<'source> {
                     match self.parse_pre_token(pre_token) {
                         None => {
                             // underlying pre_token is ignored by the Lexer
-                            continue
-                        },
+                            continue;
+                        }
                         Some(token) => {
                             // TODO: replace extras to tokens with corresponding fields
                             self.extras.0 = self.lex.extras.0;
                             self.extras.1 = self.lex.extras.1;
-                            return Some(token)
+                            return Some(token);
                         }
                     }
                 }
