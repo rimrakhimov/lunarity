@@ -1,70 +1,44 @@
 extern crate logos;
 
+mod lexer;
+mod pre_token;
 mod token;
 
+pub use self::lexer::Lexer;
 pub use self::token::Token;
-pub use logos::{Logos, lookup};
-pub type Lexer<S> = logos::Lexer<Token, S>;
-
-// FIXME: This should probably be handled with a callback
-#[inline]
-pub fn read_pragma<'source, S: logos::Source<'source>>(lex: &mut Lexer<S>) -> S::Slice {
-    use logos::internal::LexerInternal;
-
-    loop {
-        match lex.read() {
-            0x01...0x20 => lex.bump(),
-            _           => break,
-        }
-    }
-
-    let start = lex.range().start;
-
-    loop {
-        match lex.read() {
-            0 => {
-                lex.token = Token::UnexpectedEndOfProgram;
-                let end = lex.range().end;
-
-                return lex.source.slice(start..end).expect("0 guarantees being at the end; qed");
-            },
-            b';' => {
-                let end = lex.range().end;
-
-                let version = lex.source.slice(start..end).expect("Still within bounds; qed");
-
-                lex.token = Token::Semicolon;
-                lex.bump();
-
-                return version;
-            },
-            _ => lex.bump(),
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use self::Token::*;
-    use logos::Logos;
+    use super::*;
 
     fn assert_lex<T>(source: &str, tokens: T)
     where
-        T: AsRef<[(Token, &'static str)]>
+        T: AsRef<[(Token, &'static str)]>,
     {
-        let mut lex = Token::lexer(source);
+        let mut lex = Lexer::new(source);
 
         for &(ref token, slice) in tokens.as_ref() {
+            let lex_token = lex.next();
             assert!(
-                lex.token == *token && lex.slice() == slice,
-                "\n\n\n\tExpected {:?}({:?}), found {:?}({:?}) instead!\n\n\n", token, slice, lex.token, lex.slice()
+                lex_token.is_some(),
+                "\n\n\n\tExpected {:?}({:?}), found None instead!\n\n\n",
+                token,
+                slice
             );
-            lex.advance();
+            let lex_token = lex_token.unwrap();
+
+            assert!(
+                lex_token == *token && lex.slice() == slice,
+                "\n\n\n\tExpected {:?}({:?}), found {:?}({:?}) instead!\n\n\n",
+                token,
+                slice,
+                lex_token,
+                lex.slice()
+            );
         }
 
-        assert_eq!(lex.token, EndOfProgram);
+        assert_eq!(lex.next(), None);
     }
 
     #[test]
@@ -84,7 +58,7 @@ mod test {
         assert_lex(" /* foo ***/ bar", [(Identifier, "bar")]);
         assert_lex(" /* foo ****/ bar", [(Identifier, "bar")]);
         assert_lex(" /* foo *****/ bar", [(Identifier, "bar")]);
-        assert_lex(" /* foo ", [(UnexpectedEndOfProgram, "/* foo ")]);
+        assert_lex(" /* foo ", [(UnexpectedToken, "/* foo ")]);
     }
 
     #[test]
@@ -93,7 +67,7 @@ mod test {
             "
                 foo _foo $foo $_foo _ $ $$ fooBar BarFoo foo10 $1
             ",
-             &[
+            &[
                 (Identifier, "foo"),
                 (Identifier, "_foo"),
                 (Identifier, "$foo"),
@@ -105,7 +79,7 @@ mod test {
                 (Identifier, "BarFoo"),
                 (Identifier, "foo10"),
                 (Identifier, "$1"),
-            ][..]
+            ][..],
         );
     }
 
@@ -115,7 +89,7 @@ mod test {
             "
                 ; : , . ( ) { } [ ] =>
             ",
-             &[
+            &[
                 (Semicolon, ";"),
                 (Colon, ":"),
                 (Comma, ","),
@@ -127,7 +101,7 @@ mod test {
                 (BracketOpen, "["),
                 (BracketClose, "]"),
                 (Arrow, "=>"),
-            ][..]
+            ][..],
         );
     }
 
@@ -138,7 +112,7 @@ mod test {
                 true false 0 42 0xDEAD 0Xdead 3.14 3.14E+2 .12345
                 5.1e2 42e-3 500E-1 500.1 10.000 'foo bar' "doge to the moon"
             "#,
-             &[
+            &[
                 (LiteralTrue, "true"),
                 (LiteralFalse, "false"),
                 (LiteralInteger, "0"),
@@ -155,32 +129,37 @@ mod test {
                 (LiteralInteger, "10.000"),
                 (LiteralString, "'foo bar'"),
                 (LiteralString, "\"doge to the moon\""),
-            ][..]
+            ][..],
         );
     }
 
     #[test]
     fn strings() {
-        assert_lex(r#"
-            foo
-            "\x19Ethereum Signed Message:\n47Please take my Ether and try to build Polkadot."
-        "#,
-        &[
-            (Identifier, "foo"),
-            (LiteralString, r#""\x19Ethereum Signed Message:\n47Please take my Ether and try to build Polkadot.""#),
-        ])
+        assert_lex(
+            r#"
+                foo
+                "\x19Ethereum Signed Message:\n47Please take my Ether and try to build Polkadot."
+            "#,
+            &[
+                (Identifier, "foo"),
+                (
+                    LiteralString,
+                    r#""\x19Ethereum Signed Message:\n47Please take my Ether and try to build Polkadot.""#,
+                ),
+            ],
+        )
     }
 
     #[test]
     fn keywords() {
         assert_lex(
             "
-                anonymous as assembly break constant continue do
-                delete else external for hex if indexed internal import
-                is mapping memory new payable public pragma private pure
-                return returns storage super this throw using view while
-            ",
-             &[
+                    anonymous as assembly break constant continue do
+                    delete else external for hex if indexed internal import
+                    is mapping memory new payable public pragma private pure
+                    return returns storage super this throw using view while
+                ",
+            &[
                 (KeywordAnonymous, "anonymous"),
                 (KeywordAs, "as"),
                 (KeywordAssembly, "assembly"),
@@ -215,7 +194,7 @@ mod test {
                 (KeywordUsing, "using"),
                 (KeywordView, "view"),
                 (KeywordWhile, "while"),
-            ][..]
+            ][..],
         );
     }
 
@@ -223,10 +202,10 @@ mod test {
     fn declarations() {
         assert_lex(
             "
-                var function event modifier struct
-                enum contract library interface
-            ",
-             &[
+                    var function event modifier struct
+                    enum contract library interface
+                ",
+            &[
                 (DeclarationVar, "var"),
                 (DeclarationFunction, "function"),
                 (DeclarationEvent, "event"),
@@ -236,7 +215,7 @@ mod test {
                 (DeclarationContract, "contract"),
                 (DeclarationLibrary, "library"),
                 (DeclarationInterface, "interface"),
-            ][..]
+            ][..],
         );
     }
 
@@ -244,10 +223,10 @@ mod test {
     fn units() {
         assert_lex(
             "
-                wei szabo finney ether
-                seconds minutes hours days weeks years
-            ",
-             &[
+                    wei szabo finney ether
+                    seconds minutes hours days weeks years
+                ",
+            &[
                 (UnitWei, "wei"),
                 (UnitSzabo, "szabo"),
                 (UnitFinney, "finney"),
@@ -258,7 +237,7 @@ mod test {
                 (UnitTimeDays, "days"),
                 (UnitTimeWeeks, "weeks"),
                 (UnitTimeYears, "years"),
-            ][..]
+            ][..],
         );
     }
 
@@ -266,11 +245,11 @@ mod test {
     fn reserved_words() {
         assert_lex(
             "
-                abstract after case catch default final in
-                inline let match null of relocatable static
-                switch try type typeof
-            ",
-             &[
+                    abstract after case catch default final in
+                    inline let match null of relocatable static
+                    switch try type typeof
+                ",
+            &[
                 (ReservedWord, "abstract"),
                 (ReservedWord, "after"),
                 (ReservedWord, "case"),
@@ -289,7 +268,7 @@ mod test {
                 (ReservedWord, "try"),
                 (ReservedWord, "type"),
                 (ReservedWord, "typeof"),
-            ][..]
+            ][..],
         );
     }
 
@@ -297,11 +276,11 @@ mod test {
     fn builtins() {
         assert_lex(
             "
-                block msg tx now suicide selfdestruct addmod
-                mulmod sha3 keccak256 log0 log1 log2 log3 log4
-                sha256 ecrecover ripemd160 assert revert require
-            ",
-             &[
+                    block msg tx now suicide selfdestruct addmod
+                    mulmod sha3 keccak256 log0 log1 log2 log3 log4
+                    sha256 ecrecover ripemd160 assert revert require
+                ",
+            &[
                 (IdentifierBuiltin, "block"),
                 (IdentifierBuiltin, "msg"),
                 (IdentifierBuiltin, "tx"),
@@ -323,7 +302,7 @@ mod test {
                 (IdentifierBuiltin, "assert"),
                 (IdentifierBuiltin, "revert"),
                 (IdentifierBuiltin, "require"),
-            ][..]
+            ][..],
         );
     }
 
@@ -331,11 +310,11 @@ mod test {
     fn operators() {
         assert_lex(
             "
-                ++ -- ! ~ * / % ** + - << >>
-                < <= > >= == != & ^ | && || ?
-                = += -= *= /= %= <<= >>= &= ^= |=
-            ",
-             &[
+                    ++ -- ! ~ * / % ** + - << >>
+                    < <= > >= == != & ^ | && || ?
+                    = += -= *= /= %= <<= >>= &= ^= |=
+                ",
+            &[
                 (OperatorIncrement, "++"),
                 (OperatorDecrement, "--"),
                 (OperatorLogicalNot, "!"),
@@ -371,7 +350,7 @@ mod test {
                 (AssignBitAnd, "&="),
                 (AssignBitXor, "^="),
                 (AssignBitOr, "|="),
-            ][..]
+            ][..],
         );
     }
 
@@ -379,9 +358,9 @@ mod test {
     fn types_easy() {
         assert_lex(
             "
-                bool int uint string byte bytes address fixed ufixed
-            ",
-             &[
+                    bool int uint string byte bytes address fixed ufixed
+                ",
+            &[
                 (TypeBool, "bool"),
                 (TypeInt, "int"),
                 (TypeUint, "uint"),
@@ -391,7 +370,7 @@ mod test {
                 (TypeAddress, "address"),
                 (TypeFixed, "fixed"),
                 (TypeUfixed, "ufixed"),
-            ][..]
+            ][..],
         );
     }
 
@@ -399,12 +378,12 @@ mod test {
     fn types_bytes() {
         assert_lex(
             "
-                bytes1  bytes2  bytes3  bytes4  bytes5  bytes6  bytes7  bytes8
-                bytes9  bytes10 bytes11 bytes12 bytes13 bytes14 bytes15 bytes16
-                bytes17 bytes18 bytes19 bytes20 bytes21 bytes22 bytes23 bytes24
-                bytes25 bytes26 bytes27 bytes28 bytes29 bytes30 bytes31 bytes32
-            ",
-             &[
+                    bytes1  bytes2  bytes3  bytes4  bytes5  bytes6  bytes7  bytes8
+                    bytes9  bytes10 bytes11 bytes12 bytes13 bytes14 bytes15 bytes16
+                    bytes17 bytes18 bytes19 bytes20 bytes21 bytes22 bytes23 bytes24
+                    bytes25 bytes26 bytes27 bytes28 bytes29 bytes30 bytes31 bytes32
+                ",
+            &[
                 (TypeByte, "bytes1"),
                 (TypeByte, "bytes2"),
                 (TypeByte, "bytes3"),
@@ -437,7 +416,7 @@ mod test {
                 (TypeByte, "bytes30"),
                 (TypeByte, "bytes31"),
                 (TypeByte, "bytes32"),
-            ][..]
+            ][..],
         );
     }
 
@@ -445,12 +424,12 @@ mod test {
     fn types_int() {
         assert_lex(
             "
-                int8   int16  int24  int32  int40  int48  int56  int64
-                int72  int80  int88  int96  int104 int112 int120 int128
-                int136 int144 int152 int160 int168 int176 int184 int192
-                int200 int208 int216 int224 int232 int240 int248 int256
-            ",
-             &[
+                    int8   int16  int24  int32  int40  int48  int56  int64
+                    int72  int80  int88  int96  int104 int112 int120 int128
+                    int136 int144 int152 int160 int168 int176 int184 int192
+                    int200 int208 int216 int224 int232 int240 int248 int256
+                ",
+            &[
                 (TypeInt, "int8"),
                 (TypeInt, "int16"),
                 (TypeInt, "int24"),
@@ -483,7 +462,7 @@ mod test {
                 (TypeInt, "int240"),
                 (TypeInt, "int248"),
                 (TypeInt, "int256"),
-            ][..]
+            ][..],
         );
     }
 
@@ -491,12 +470,12 @@ mod test {
     fn types_uint() {
         assert_lex(
             "
-                uint8   uint16  uint24  uint32  uint40  uint48  uint56  uint64
-                uint72  uint80  uint88  uint96  uint104 uint112 uint120 uint128
-                uint136 uint144 uint152 uint160 uint168 uint176 uint184 uint192
-                uint200 uint208 uint216 uint224 uint232 uint240 uint248 uint256
-            ",
-             &[
+                    uint8   uint16  uint24  uint32  uint40  uint48  uint56  uint64
+                    uint72  uint80  uint88  uint96  uint104 uint112 uint120 uint128
+                    uint136 uint144 uint152 uint160 uint168 uint176 uint184 uint192
+                    uint200 uint208 uint216 uint224 uint232 uint240 uint248 uint256
+                ",
+            &[
                 (TypeUint, "uint8"),
                 (TypeUint, "uint16"),
                 (TypeUint, "uint24"),
@@ -529,7 +508,7 @@ mod test {
                 (TypeUint, "uint240"),
                 (TypeUint, "uint248"),
                 (TypeUint, "uint256"),
-            ][..]
+            ][..],
         );
     }
 
@@ -537,10 +516,10 @@ mod test {
     fn types_fixed_ufixed() {
         assert_lex(
             "
-                fixed8x0  fixed8x1  fixed16x2  fixed256x80  fixed144x57
-                ufixed8x0 ufixed8x1 ufixed16x2 ufixed256x80 ufixed144x57
-            ",
-             &[
+                    fixed8x0  fixed8x1  fixed16x2  fixed256x80  fixed144x57
+                    ufixed8x0 ufixed8x1 ufixed16x2 ufixed256x80 ufixed144x57
+                ",
+            &[
                 (TypeFixed, "fixed8x0"),
                 (TypeFixed, "fixed8x1"),
                 (TypeFixed, "fixed16x2"),
@@ -551,7 +530,7 @@ mod test {
                 (TypeUfixed, "ufixed16x2"),
                 (TypeUfixed, "ufixed256x80"),
                 (TypeUfixed, "ufixed144x57"),
-            ][..]
+            ][..],
         );
     }
 
@@ -559,10 +538,10 @@ mod test {
     fn not_real_types() {
         assert_lex(
             "
-                bytes33 int127 fixed127 fixed128x fixed258x80 fixed256x81
-                bytes0  uint0  uint53   ufixed1x1
-            ",
-             &[
+                    bytes33 int127 fixed127 fixed128x fixed258x80 fixed256x81
+                    bytes0  uint0  uint53   ufixed1x1
+                ",
+            &[
                 (Identifier, "bytes33"),
                 (Identifier, "int127"),
                 (Identifier, "fixed127"),
@@ -573,7 +552,7 @@ mod test {
                 (Identifier, "uint0"),
                 (Identifier, "uint53"),
                 (Identifier, "ufixed1x1"),
-            ][..]
+            ][..],
         );
     }
 
@@ -581,16 +560,20 @@ mod test {
     fn second_price_auction() {
         let source = include_str!("../../lunarity/benches/second-price-auction.sol");
 
-        let mut lex = Token::lexer(source);
+        let mut lex = Lexer::new(source);
         let mut tokens = 0;
 
-        while lex.token != EndOfProgram {
-            assert_ne!(lex.token, UnexpectedToken, "Unexpected: {} at {:?}", lex.slice(), lex.range());
-            assert_ne!(lex.token, UnexpectedEndOfProgram);
-
+        let mut lex_token = lex.next();
+        while let Some(token) = lex_token {
+            assert_ne!(
+                token,
+                UnexpectedToken,
+                "Unexpected: {} at {:?}",
+                lex.slice(),
+                lex.span()
+            );
             tokens += 1;
-
-            lex.advance();
+            lex_token = lex.next();
         }
 
         assert_eq!(tokens, 1299);
